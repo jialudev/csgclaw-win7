@@ -1,0 +1,963 @@
+diff --git a/codex-rs/.cargo/config.toml b/codex-rs/.cargo/config.toml
+index 8a6f2c1..3566d5f 100644
+--- a/codex-rs/.cargo/config.toml
++++ b/codex-rs/.cargo/config.toml
+@@ -1,6 +1,24 @@
+ [target.'cfg(all(windows, target_env = "msvc"))']
+ rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "target-feature=+crt-static"]
+ 
++# win7 port: exact-triple section (takes precedence over the cfg section above).
++# -L: windows_x86_64_msvc-0.48.5 build.rs only emits the link-search path for
++#     x86_64-pc-windows-msvc, so supply it for the win7 target.
++# /DELAYLOAD: combase / WinRT / apiquery / security-base API sets are Win8+;
++#     defer their resolution so the image loads on Windows 7.
++[target.x86_64-win7-windows-msvc]
++rustflags = [
++    "-C", "link-arg=/STACK:8388608",
++    "-C", "target-feature=+crt-static",
++    "-L", "native=C:/Users/haiku/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/windows_x86_64_msvc-0.48.5/lib",
++    "-C", "link-arg=/DELAYLOAD:combase.dll",
++    "-C", "link-arg=/DELAYLOAD:api-ms-win-core-winrt-l1-1-0.dll",
++    "-C", "link-arg=/DELAYLOAD:api-ms-win-core-apiquery-l2-1-0.dll",
++    "-C", "link-arg=/DELAYLOAD:api-ms-win-security-base-l1-2-2.dll",
++    "-C", "link-arg=/DELAYLOAD:userenv.dll",
++    "-C", "link-arg=/DEFAULTLIB:delayimp",
++]
++
+ # MSVC emits a warning about code that may trip "Cortex-A53 MPCore processor bug #843419" (see
+ # https://developer.arm.com/documentation/epm048406/latest) which is sometimes emitted by LLVM.
+ # Since Arm64 Windows 10+ isn't supported on that processor, it's safe to disable the warning.
+@@ -9,3 +27,10 @@ rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "link-arg=/arm64hazardfree"]
+ 
+ [target.'cfg(all(windows, target_env = "gnu"))']
+ rustflags = ["-C", "link-arg=-Wl,--stack,8388608"]
++
++# win7 port: build std from source for the tier-3 target
++[unstable]
++build-std = ["std"]
++
++[net]
++git-fetch-with-cli = true
+diff --git a/codex-rs/cli/Cargo.toml b/codex-rs/cli/Cargo.toml
+index 608921c..423778d 100644
+--- a/codex-rs/cli/Cargo.toml
++++ b/codex-rs/cli/Cargo.toml
+@@ -116,6 +116,7 @@ windows-sys = { workspace = true, features = [
+     "Win32_Foundation",
+     "Win32_Storage_Packaging_Appx",
+     "Win32_System_Console",
++    "Win32_System_LibraryLoader",
+     "Win32_System_Threading",
+ ] }
+ 
+diff --git a/codex-rs/cli/build.rs b/codex-rs/cli/build.rs
+index abccc48..cdec4bf 100644
+--- a/codex-rs/cli/build.rs
++++ b/codex-rs/cli/build.rs
+@@ -2,4 +2,13 @@ fn main() {
+     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+         println!("cargo:rustc-link-arg=-ObjC");
+     }
++    // Win7 port: delay-load failure hook (see win7-codex-port/tools/delayhook.c).
++    // Provides fallbacks for Win8+ procs resolved through /DELAYLOAD on Windows 7.
++    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
++        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
++    {
++        let hook_obj = "C:/Users/haiku/ZCodeProject/win7-codex-port/tools/delayhook-logging2.obj";
++        println!("cargo:rerun-if-changed={hook_obj}");
++        println!("cargo:rustc-link-arg={hook_obj}");
++    }
+ }
+diff --git a/codex-rs/cli/src/doctor/desktop/platform.rs b/codex-rs/cli/src/doctor/desktop/platform.rs
+index 0f167ad..755f89e 100644
+--- a/codex-rs/cli/src/doctor/desktop/platform.rs
++++ b/codex-rs/cli/src/doctor/desktop/platform.rs
+@@ -1,4 +1,5 @@
+ #[cfg(target_os = "macos")]
++use codex_windows_sandbox::win7_proc;
+ use std::ffi::CStr;
+ #[cfg(target_os = "macos")]
+ use std::ffi::OsStr;
+@@ -32,10 +33,6 @@ use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+ #[cfg(target_os = "windows")]
+ use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+ #[cfg(target_os = "windows")]
+-use windows_sys::Win32::Storage::Packaging::Appx::FindPackagesByPackageFamily;
+-#[cfg(target_os = "windows")]
+-use windows_sys::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
+-#[cfg(target_os = "windows")]
+ use windows_sys::Win32::Storage::Packaging::Appx::PACKAGE_FILTER_HEAD;
+ #[cfg(target_os = "windows")]
+ use windows_sys::Win32::System::Threading::OpenProcess;
+@@ -45,6 +42,24 @@ use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
+ use super::super::CheckStatus;
+ use super::super::DoctorCheck;
+ 
++#[cfg(target_os = "windows")]
++type FindPackagesByPackageFamilyFn = unsafe extern "system" fn(
++    *const u16,
++    u32,
++    *mut u32,
++    *mut *mut u16,
++    *mut u32,
++    *mut u16,
++    *mut u32,
++) -> u32;
++
++#[cfg(target_os = "windows")]
++type GetPackageFamilyNameFn =
++    unsafe extern "system" fn(windows_sys::Win32::Foundation::HANDLE, *mut u32, *mut u16) -> u32;
++
++// Package identity APIs are Windows 8+; resolve at call time so the image
++// loads on Windows 7, where the desktop app can never be installed.
++
+ pub(in crate::doctor) struct InstalledApp {
+     pub(in crate::doctor) identity: &'static str,
+     pub(in crate::doctor) version: String,
+@@ -100,6 +115,12 @@ pub(super) fn application_running(application: &InstalledApp, candidate_pid: u32
+ 
+ #[cfg(target_os = "windows")]
+ fn process_package_family(pid: u32) -> Option<String> {
++    let Some(get_package_family_name) =
++        codex_windows_sandbox::win7_proc!(b"GetPackageFamilyName" as GetPackageFamilyNameFn)
++    else {
++        // Package identity APIs are Windows 8+; no packaged app can be running.
++        return None;
++    };
+     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+     if handle.is_null() {
+         return None;
+@@ -108,7 +129,7 @@ fn process_package_family(pid: u32) -> Option<String> {
+ 
+     let mut family_length = 0;
+     let result = unsafe {
+-        GetPackageFamilyName(
++        get_package_family_name(
+             process.as_raw_handle(),
+             &mut family_length,
+             std::ptr::null_mut(),
+@@ -120,7 +141,7 @@ fn process_package_family(pid: u32) -> Option<String> {
+ 
+     let mut family = vec![0_u16; family_length as usize];
+     let result = unsafe {
+-        GetPackageFamilyName(
++        get_package_family_name(
+             process.as_raw_handle(),
+             &mut family_length,
+             family.as_mut_ptr(),
+@@ -151,6 +172,13 @@ pub(super) fn desktop_check(
+ fn installed_windows_app() -> Result<Option<InstalledApp>, DiscoveryError> {
+     const PACKAGE_FAMILY: &str = "OpenAI.Codex_2p2nqsd0c76g0";
+ 
++    let Some(find_packages_by_package_family) = codex_windows_sandbox::win7_proc!(
++        b"FindPackagesByPackageFamily" as FindPackagesByPackageFamilyFn
++    ) else {
++        // Package enumeration is Windows 8+; the desktop app cannot be installed.
++        return Ok(None);
++    };
++
+     let family = PACKAGE_FAMILY
+         .encode_utf16()
+         .chain(std::iter::once(0))
+@@ -158,7 +186,7 @@ fn installed_windows_app() -> Result<Option<InstalledApp>, DiscoveryError> {
+     let mut count = 0;
+     let mut length = 0;
+     let result = unsafe {
+-        FindPackagesByPackageFamily(
++        find_packages_by_package_family(
+             family.as_ptr(),
+             PACKAGE_FILTER_HEAD,
+             &mut count,
+@@ -178,7 +206,7 @@ fn installed_windows_app() -> Result<Option<InstalledApp>, DiscoveryError> {
+     let mut names = vec![std::ptr::null_mut(); count as usize];
+     let mut buffer = vec![0_u16; length as usize];
+     let result = unsafe {
+-        FindPackagesByPackageFamily(
++        find_packages_by_package_family(
+             family.as_ptr(),
+             PACKAGE_FILTER_HEAD,
+             &mut count,
+diff --git a/codex-rs/tui/src/cli.rs b/codex-rs/tui/src/cli.rs
+index cfa2d86..deed936 100644
+--- a/codex-rs/tui/src/cli.rs
++++ b/codex-rs/tui/src/cli.rs
+@@ -81,7 +81,9 @@ pub struct Cli {
+     pub no_alt_screen: bool,
+ 
+     /// Run without the shared background server, even if it is already running.
+-    #[arg(long)]
++    // Win7 port default: the daemon requires the packaged app layout, which a
++    // source build does not have, so it always runs in-process.
++    #[arg(long, default_value_t = true)]
+     pub no_daemon: bool,
+ 
+     #[clap(skip)]
+diff --git a/codex-rs/tui/src/tui.rs b/codex-rs/tui/src/tui.rs
+index 69abbb3..65cad0f 100644
+--- a/codex-rs/tui/src/tui.rs
++++ b/codex-rs/tui/src/tui.rs
+@@ -242,7 +242,9 @@ mod tests {
+ pub fn set_modes() -> Result<()> {
+     ensure_virtual_terminal_processing()?;
+ 
+-    execute!(stdout(), EnableBracketedPaste)?;
++    // Legacy Windows consoles cannot do bracketed paste; degrade gracefully
++    // instead of failing startup.
++    let _ = execute!(stdout(), EnableBracketedPaste);
+ 
+     enable_raw_mode()?;
+     #[cfg(windows)]
+@@ -1543,8 +1545,11 @@ fn ensure_virtual_terminal_processing() -> Result<()> {
+             return Ok(());
+         }
+ 
++        // Pre-Windows-10 conhost rejects ENABLE_VIRTUAL_TERMINAL_PROCESSING with
++        // ERROR_INVALID_PARAMETER; treat that as "VT unavailable" and continue
++        // instead of failing startup.
+         if unsafe { SetConsoleMode(handle, mode | requested) } == 0 {
+-            return Err(std::io::Error::last_os_error());
++            return Ok(());
+         }
+ 
+         Ok(())
+diff --git a/codex-rs/utils/pty/src/pty.rs b/codex-rs/utils/pty/src/pty.rs
+index 035fad8..e46f780 100644
+--- a/codex-rs/utils/pty/src/pty.rs
++++ b/codex-rs/utils/pty/src/pty.rs
+@@ -133,7 +133,12 @@ impl ChildTerminator for RawPidTerminator {
+ fn platform_native_pty_system() -> Box<dyn portable_pty::PtySystem + Send> {
+     #[cfg(windows)]
+     {
+-        Box::new(crate::win::ConPtySystem::default())
++        // Windows releases without ConPTY (pre-10 1809) fall back to winpty.
++        if crate::win::conpty_supported() {
++            Box::new(crate::win::ConPtySystem::default())
++        } else {
++            Box::new(crate::win::WinPtySystem::default())
++        }
+     }
+ 
+     #[cfg(not(windows))]
+diff --git a/codex-rs/utils/pty/src/win/mod.rs b/codex-rs/utils/pty/src/win/mod.rs
+index 05063cf..d104393 100644
+--- a/codex-rs/utils/pty/src/win/mod.rs
++++ b/codex-rs/utils/pty/src/win/mod.rs
+@@ -45,11 +45,13 @@ pub(crate) mod conpty;
+ mod job;
+ mod procthreadattr;
+ mod psuedocon;
++mod winpty;
+ 
+ pub use conpty::ConPtySystem;
+ pub use job::JobObject;
+ pub use psuedocon::PsuedoCon;
+ pub use psuedocon::conpty_supported;
++pub use winpty::WinPtySystem;
+ 
+ #[derive(Debug)]
+ pub struct WinChild {
+diff --git a/codex-rs/utils/pty/src/win/psuedocon.rs b/codex-rs/utils/pty/src/win/psuedocon.rs
+index 1b83478..757274b 100644
+--- a/codex-rs/utils/pty/src/win/psuedocon.rs
++++ b/codex-rs/utils/pty/src/win/psuedocon.rs
+@@ -237,7 +237,7 @@ impl PsuedoCon {
+ #[path = "psuedocon_tests.rs"]
+ mod lifecycle_tests;
+ 
+-fn resolve_current_directory(cmd: &CommandBuilder) -> Option<Vec<u16>> {
++pub(crate) fn resolve_current_directory(cmd: &CommandBuilder) -> Option<Vec<u16>> {
+     let home = cmd
+         .get_env("USERPROFILE")
+         .and_then(|path| Path::new(path).is_dir().then(|| path.to_owned()));
+@@ -260,7 +260,7 @@ fn resolve_current_directory(cmd: &CommandBuilder) -> Option<Vec<u16>> {
+     Some(wide)
+ }
+ 
+-fn build_environment_block(cmd: &CommandBuilder) -> Vec<u16> {
++pub(crate) fn build_environment_block(cmd: &CommandBuilder) -> Vec<u16> {
+     let mut block = Vec::new();
+     for (key, value) in cmd.iter_full_env_as_str() {
+         block.extend(OsStr::new(key).encode_wide());
+@@ -272,7 +272,7 @@ fn build_environment_block(cmd: &CommandBuilder) -> Vec<u16> {
+     block
+ }
+ 
+-fn build_cmdline(cmd: &CommandBuilder) -> anyhow::Result<(Vec<u16>, Vec<u16>)> {
++pub(crate) fn build_cmdline(cmd: &CommandBuilder) -> anyhow::Result<(Vec<u16>, Vec<u16>)> {
+     let exe_os: OsString = if cmd.is_default_prog() {
+         cmd.get_env("ComSpec")
+             .unwrap_or(OsStr::new("cmd.exe"))
+diff --git a/codex-rs/utils/pty/src/win/winpty.rs b/codex-rs/utils/pty/src/win/winpty.rs
+new file mode 100644
+index 0000000..a879563
+--- /dev/null
++++ b/codex-rs/utils/pty/src/win/winpty.rs
+@@ -0,0 +1,369 @@
++// winpty-backed PTY system for Windows releases without ConPTY (pre-1809).
++//
++// winpty ships as winpty.dll plus a winpty-agent.exe helper; both are resolved
++// at runtime so ConPTY-capable systems never require them. The agent hosts a
++// hidden console and bridges it onto named pipes, which this module presents
++// through the same portable_pty::PtySystem contract as ConPtySystem.
++
++use std::fs::File;
++use std::os::windows::io::FromRawHandle;
++use std::sync::Arc;
++use std::sync::Mutex;
++
++use portable_pty::Child;
++use portable_pty::CommandBuilder;
++use portable_pty::MasterPty;
++use portable_pty::PtyPair;
++use portable_pty::PtySize;
++use portable_pty::PtySystem;
++use portable_pty::SlavePty;
++use winapi::shared::minwindef::DWORD;
++use winapi::shared::ntdef::HANDLE;
++use winapi::shared::ntdef::WCHAR;
++use winapi::um::handleapi::CloseHandle;
++use winapi::um::libloaderapi::GetProcAddress;
++use winapi::um::libloaderapi::LoadLibraryW;
++
++use crate::win::job::JobObject;
++use crate::win::psuedocon::build_cmdline;
++use crate::win::psuedocon::build_environment_block;
++use crate::win::psuedocon::resolve_current_directory;
++use crate::win::WinChild;
++
++// https://github.com/rprichard/winpty/blob/master/src/include/winpty_constants.h
++const WINPTY_FLAG_CONCEAL: u64 = 0x0004;
++const WINPTY_SPAWN_FLAG_AUTO_SHUTDOWN: u64 = 0x0001;
++const WINPTY_SPAWN_FLAG_EXIT_SHUTDOWN: u64 = 0x0002;
++
++#[repr(C)]
++struct WinPty {
++    _private: [u8; 0],
++}
++#[repr(C)]
++struct WinPtyCfg {
++    _private: [u8; 0],
++}
++#[repr(C)]
++struct WinPtySpawnCfg {
++    _private: [u8; 0],
++}
++#[repr(C)]
++struct WinPtyError {
++    _private: [u8; 0],
++}
++
++type ConfigNew =
++    unsafe extern "system" fn(agent_flags: u64, err: *mut *mut WinPtyError) -> *mut WinPtyCfg;
++type ConfigSetInitialSize = unsafe extern "system" fn(cfg: *mut WinPtyCfg, cols: i32, rows: i32);
++type SessionOpen = unsafe extern "system" fn(
++    cfg: *const WinPtyCfg,
++    err: *mut *mut WinPtyError,
++) -> *mut WinPty;
++type PipeName = unsafe extern "system" fn(w: *const WinPty) -> *const WCHAR;
++type SetSize = unsafe extern "system" fn(
++    w: *mut WinPty,
++    cols: i32,
++    rows: i32,
++    err: *mut *mut WinPtyError,
++) -> i32;
++type SpawnConfigNew = unsafe extern "system" fn(
++    spawn_flags: u64,
++    appname: *const WCHAR,
++    cmdline: *const WCHAR,
++    cwd: *const WCHAR,
++    env: *const WCHAR,
++    err: *mut *mut WinPtyError,
++) -> *mut WinPtySpawnCfg;
++type Spawn = unsafe extern "system" fn(
++    w: *mut WinPty,
++    cfg: *const WinPtySpawnCfg,
++    out_process: *mut HANDLE,
++    out_thread: *mut HANDLE,
++    out_create_error: *mut DWORD,
++    err: *mut *mut WinPtyError,
++) -> i32;
++type ErrorMessage = unsafe extern "system" fn(err: *mut WinPtyError) -> *const WCHAR;
++type FreeOne = unsafe extern "system" fn(p: *const core::ffi::c_void);
++type ErrorFree = unsafe extern "system" fn(err: *mut WinPtyError);
++
++/// Every entry point codex needs from winpty.dll, resolved once at load time.
++struct WinPtyApi {
++    module: winapi::shared::minwindef::HMODULE,
++    config_new: ConfigNew,
++    config_set_initial_size: ConfigSetInitialSize,
++    open: SessionOpen,
++    conin_name: PipeName,
++    conout_name: PipeName,
++    set_size: SetSize,
++    config_free: FreeOne,
++    spawn_config_new: SpawnConfigNew,
++    spawn_config_free: FreeOne,
++    spawn: Spawn,
++    error_msg: ErrorMessage,
++    error_free: ErrorFree,
++    free: FreeOne,
++}
++
++impl Drop for WinPtyApi {
++    fn drop(&mut self) {
++        unsafe { winapi::um::libloaderapi::FreeLibrary(self.module) };
++    }
++}
++
++impl WinPtyApi {
++    /// Resolve every symbol up front; a missing dll or entry point is a clean
++    /// error, never a load failure of the host process.
++    fn open() -> anyhow::Result<Self> {
++        let name: Vec<u16> = "winpty.dll".encode_utf16().chain([0]).collect();
++        unsafe {
++            let module = LoadLibraryW(name.as_ptr());
++            if module.is_null() {
++                anyhow::bail!("winpty.dll not found; it must sit next to codex.exe");
++            }
++            let resolve = |symbol: &[u8]| -> anyhow::Result<*mut core::ffi::c_void> {
++                let mut symbol = symbol.to_vec();
++                symbol.push(0);
++                let func = GetProcAddress(module, symbol.as_ptr().cast());
++                if func.is_null() {
++                    anyhow::bail!(
++                        "winpty.dll is missing entry point {}",
++                        String::from_utf8_lossy(symbol.strip_suffix(&[0u8]).unwrap_or(&symbol))
++                    );
++                }
++                Ok(func.cast())
++            };
++            let typed = |symbol: &[u8]| -> anyhow::Result<unsafe extern "system" fn()> {
++                let func = resolve(symbol)?;
++                Ok(core::mem::transmute(func))
++            };
++            Ok(Self {
++                module,
++                config_new: core::mem::transmute(typed(b"winpty_config_new")?),
++                config_set_initial_size: core::mem::transmute(typed(
++                    b"winpty_config_set_initial_size",
++                )?),
++                open: core::mem::transmute(typed(b"winpty_open")?),
++                conin_name: core::mem::transmute(typed(b"winpty_conin_name")?),
++                conout_name: core::mem::transmute(typed(b"winpty_conout_name")?),
++                set_size: core::mem::transmute(typed(b"winpty_set_size")?),
++                config_free: core::mem::transmute(typed(b"winpty_config_free")?),
++                spawn_config_new: core::mem::transmute(typed(b"winpty_spawn_config_new")?),
++                spawn_config_free: core::mem::transmute(typed(b"winpty_spawn_config_free")?),
++                spawn: core::mem::transmute(typed(b"winpty_spawn")?),
++                error_msg: core::mem::transmute(typed(b"winpty_error_msg")?),
++                error_free: core::mem::transmute(typed(b"winpty_error_free")?),
++                free: core::mem::transmute(typed(b"winpty_free")?),
++            })
++        }
++    }
++}
++
++fn last_error(api: &WinPtyApi, err: *mut WinPtyError) -> String {
++    unsafe {
++        if err.is_null() {
++            return "unknown winpty error".to_string();
++        }
++        let msg = (api.error_msg)(err);
++        let mut len = 0usize;
++        while *msg.add(len) != 0 {
++            len += 1;
++        }
++        let text = String::from_utf16_lossy(std::slice::from_raw_parts(msg, len));
++        (api.error_free)(err);
++        text
++    }
++}
++
++// winpty pipes are directional: the client writes conin and reads conout;
++// requesting the wrong direction is denied by the pipe's security descriptor.
++fn open_pipe(name_ptr: *const WCHAR, write_end: bool) -> anyhow::Result<File> {
++    let mut len = 0usize;
++    unsafe {
++        while *name_ptr.add(len) != 0 {
++            len += 1;
++        }
++    }
++    let name = unsafe {
++        use std::os::windows::ffi::OsStringExt;
++        std::ffi::OsString::from_wide(std::slice::from_raw_parts(name_ptr, len))
++    };
++    let mut options = File::options();
++    if write_end {
++        options.write(true);
++    } else {
++        options.read(true);
++    }
++    Ok(options.open(&name)?)
++}
++
++#[derive(Default)]
++pub struct WinPtySystem {}
++
++struct Session {
++    api: Arc<WinPtyApi>,
++    wpty: *mut WinPty,
++    readable: File,
++    writable: Option<File>,
++    size: PtySize,
++}
++
++unsafe impl Send for Session {}
++unsafe impl Sync for Session {}
++
++impl Session {
++    fn resize(&mut self, size: PtySize) -> anyhow::Result<()> {
++        let mut err: *mut WinPtyError = std::ptr::null_mut();
++        if unsafe { (self.api.set_size)(self.wpty, size.cols as i32, size.rows as i32, &mut err) }
++            == 0
++        {
++            anyhow::bail!("winpty_set_size failed: {}", last_error(&self.api, err));
++        }
++        self.size = size;
++        Ok(())
++    }
++}
++
++impl PtySystem for WinPtySystem {
++    fn openpty(&self, size: PtySize) -> anyhow::Result<PtyPair> {
++        let api = Arc::new(WinPtyApi::open()?);
++
++        let mut err: *mut WinPtyError = std::ptr::null_mut();
++        unsafe {
++            let cfg = (api.config_new)(WINPTY_FLAG_CONCEAL, &mut err);
++            if cfg.is_null() {
++                anyhow::bail!("winpty_config_new failed: {}", last_error(&api, err));
++            }
++            (api.config_set_initial_size)(cfg, size.cols as i32, size.rows as i32);
++            let wpty = (api.open)(cfg, &mut err);
++            (api.config_free)(cfg.cast());
++            if wpty.is_null() {
++                anyhow::bail!("winpty_open failed: {}", last_error(&api, err));
++            }
++
++            let readable = match open_pipe((api.conout_name)(wpty), /*write_end*/ false) {
++                Ok(file) => file,
++                Err(error) => {
++                    (api.free)(wpty.cast());
++                    return Err(error);
++                }
++            };
++            let writable = match open_pipe((api.conin_name)(wpty), /*write_end*/ true) {
++                Ok(file) => file,
++                Err(error) => {
++                    (api.free)(wpty.cast());
++                    return Err(error);
++                }
++            };
++
++            let master = WinPtyMasterPty {
++                inner: Arc::new(Mutex::new(Session {
++                    api: Arc::clone(&api),
++                    wpty,
++                    readable,
++                    writable: Some(writable),
++                    size,
++                })),
++            };
++            let slave = WinPtySlavePty {
++                inner: master.inner.clone(),
++            };
++            Ok(PtyPair {
++                master: Box::new(master),
++                slave: Box::new(slave),
++            })
++        }
++    }
++}
++
++impl MasterPty for WinPtyMasterPty {
++    fn resize(&self, size: PtySize) -> anyhow::Result<()> {
++        self.inner.lock().unwrap().resize(size)
++    }
++
++    fn get_size(&self) -> anyhow::Result<PtySize> {
++        Ok(self.inner.lock().unwrap().size)
++    }
++
++    fn try_clone_reader(&self) -> anyhow::Result<Box<dyn std::io::Read + Send>> {
++        Ok(Box::new(self.inner.lock().unwrap().readable.try_clone()?))
++    }
++
++    fn take_writer(&self) -> anyhow::Result<Box<dyn std::io::Write + Send>> {
++        Ok(Box::new(
++            self.inner
++                .lock()
++                .unwrap()
++                .writable
++                .take()
++                .ok_or_else(|| anyhow::anyhow!("writer already taken"))?,
++        ))
++    }
++}
++
++struct WinPtyMasterPty {
++    inner: Arc<Mutex<Session>>,
++}
++
++struct WinPtySlavePty {
++    inner: Arc<Mutex<Session>>,
++}
++
++impl SlavePty for WinPtySlavePty {
++    fn spawn_command(&self, cmd: CommandBuilder) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
++        let inner = self.inner.lock().unwrap();
++        let api = Arc::clone(&inner.api);
++
++        let job = Arc::new(JobObject::create()?);
++        let (exe, cmdline) = build_cmdline(&cmd)?;
++        let cwd = resolve_current_directory(&cmd);
++        let env_block = build_environment_block(&cmd);
++
++        let mut err: *mut WinPtyError = std::ptr::null_mut();
++        unsafe {
++            let spawn_cfg = (api.spawn_config_new)(
++                WINPTY_SPAWN_FLAG_AUTO_SHUTDOWN | WINPTY_SPAWN_FLAG_EXIT_SHUTDOWN,
++                exe.as_ptr(),
++                cmdline.as_ptr(),
++                cwd.as_ref().map_or(std::ptr::null(), std::vec::Vec::as_ptr),
++                env_block.as_ptr(),
++                &mut err,
++            );
++            if spawn_cfg.is_null() {
++                anyhow::bail!("winpty_spawn_config_new failed: {}", last_error(&api, err));
++            }
++
++            let mut proc: HANDLE = std::ptr::null_mut();
++            let mut thread: HANDLE = std::ptr::null_mut();
++            let mut create_error: DWORD = 0;
++            let ok = (api.spawn)(
++                inner.wpty,
++                spawn_cfg,
++                &mut proc,
++                &mut thread,
++                &mut create_error,
++                &mut err,
++            );
++            (api.spawn_config_free)(spawn_cfg.cast());
++            if ok == 0 {
++                anyhow::bail!(
++                    "winpty_spawn failed (CreateProcess error {create_error}): {}",
++                    last_error(&api, err)
++                );
++            }
++            let _main_thread = CloseHandle(thread);
++
++            // Attach the job after spawn (winpty offers no spawn-time
++            // attribute); kill operations rely on the job covering the tree.
++            if let Err(error) = job.assign_process(proc.cast()) {
++                winapi::um::processthreadsapi::TerminateProcess(proc, 1);
++                CloseHandle(proc);
++                anyhow::bail!("failed to attach winpty child to job object: {error}");
++            }
++
++            Ok(Box::new(WinChild::new(
++                filedescriptor::OwnedHandle::from_raw_handle(proc.cast()),
++                job,
++            )))
++        }
++    }
++}
+diff --git a/codex-rs/windows-sandbox-rs/build.rs b/codex-rs/windows-sandbox-rs/build.rs
+index 6ba79e6..52fa5be 100644
+--- a/codex-rs/windows-sandbox-rs/build.rs
++++ b/codex-rs/windows-sandbox-rs/build.rs
+@@ -7,6 +7,21 @@ const SETUP_MANIFEST: &str = "codex-windows-sandbox-setup.manifest";
+ fn main() -> Result<(), String> {
+     println!("cargo:rerun-if-changed={SETUP_MANIFEST}");
+ 
++    // Win7 port: the command runner resolves delay-loaded Win8+ APIs through
++    // the shared failure hook (see win7-codex-port/tools/delayhook.c).
++    let hook_obj = PathBuf::from(
++        "C:/Users/haiku/ZCodeProject/win7-codex-port/tools/delayhook-logging2.obj",
++    );
++    println!("cargo:rerun-if-changed={}", hook_obj.display());
++    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
++        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
++    {
++        println!(
++            "cargo:rustc-link-arg-bin=codex-command-runner={}",
++            hook_obj.display()
++        );
++    }
++
+     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+         return Ok(());
+     }
+diff --git a/codex-rs/windows-sandbox-rs/src/app_package.rs b/codex-rs/windows-sandbox-rs/src/app_package.rs
+index 50a6e7d..6432e15 100644
+--- a/codex-rs/windows-sandbox-rs/src/app_package.rs
++++ b/codex-rs/windows-sandbox-rs/src/app_package.rs
+@@ -1,6 +1,7 @@
+ //! Select the requested runtime without inferring authority from directory or manifest text.
+ //! Registered runners still require OS package identity and the exact staged runner image.
+ 
++use crate::win7_proc;
+ use anyhow::Context;
+ use anyhow::Result;
+ use anyhow::bail;
+@@ -16,18 +17,15 @@ use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+ use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+ use windows_sys::Win32::Foundation::HANDLE;
+ use windows_sys::Win32::NetworkManagement::NetManagement::UF_ACCOUNTDISABLE;
+-use windows_sys::Win32::Storage::Packaging::Appx::GetPackageFullName;
+ use windows_sys::Win32::System::Threading::GetCurrentProcess;
+ use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
+ 
+-#[link(name = "kernel32")]
+-unsafe extern "system" {
+-    fn GetStagedPackagePathByFullName(
+-        package_full_name: *const u16,
+-        path_length: *mut u32,
+-        path: *mut u16,
+-    ) -> i32;
+-}
++type GetPackageFullNameFn = unsafe extern "system" fn(HANDLE, *mut u32, *mut u16) -> u32;
++type GetStagedPackagePathByFullNameFn =
++    unsafe extern "system" fn(*const u16, *mut u32, *mut u16) -> u32;
++
++// Package identity APIs are Windows 8+; resolve at call time so the image
++// loads on Windows 7, where the registered-Core paths can never apply.
+ 
+ /// Capture the startup request once; this flag never authorizes a package or process.
+ pub fn registered_core_requested() -> bool {
+@@ -46,8 +44,12 @@ fn current_package_full_name() -> Result<Option<String>> {
+ }
+ 
+ fn process_package_name(process: HANDLE) -> Result<Option<String>> {
++    let Some(get_package_full_name) = win7_proc!(b"GetPackageFullName" as GetPackageFullNameFn) else {
++        // Without the Win8+ package APIs no process has a package name.
++        return Ok(None);
++    };
+     query_package_name(
+-        |length, buffer| unsafe { GetPackageFullName(process, length, buffer) },
++        |length, buffer| unsafe { get_package_full_name(process, length, buffer) },
+         /*max_length*/ 32768,
+     )
+ }
+@@ -89,10 +91,15 @@ pub(crate) fn current_process_has_package_identity() -> Result<bool> {
+ }
+ 
+ fn staged_package_root(name: &[u16]) -> Result<PathBuf> {
++    let Some(get_staged_package_path) =
++        win7_proc!(b"GetStagedPackagePathByFullName" as GetStagedPackagePathByFullNameFn)
++    else {
++        bail!("staged package APIs are unavailable on this system");
++    };
+     let mut staged = vec![0u16; 32768];
+     let mut length = staged.len() as u32;
+     let status =
+-        unsafe { GetStagedPackagePathByFullName(name.as_ptr(), &mut length, staged.as_mut_ptr()) };
++        unsafe { get_staged_package_path(name.as_ptr(), &mut length, staged.as_mut_ptr()) };
+     ensure!(
+         status == 0 && length > 1 && length as usize <= staged.len(),
+         "registered Core staged package query failed: {status}"
+diff --git a/codex-rs/windows-sandbox-rs/src/bin/command_runner/win.rs b/codex-rs/windows-sandbox-rs/src/bin/command_runner/win.rs
+index e2dcb67..cb07c3b 100644
+--- a/codex-rs/windows-sandbox-rs/src/bin/command_runner/win.rs
++++ b/codex-rs/windows-sandbox-rs/src/bin/command_runner/win.rs
+@@ -71,7 +71,6 @@ use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
+ use windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING;
+ use windows_sys::Win32::System::Console::COORD;
+ use windows_sys::Win32::System::Console::HPCON;
+-use windows_sys::Win32::System::Console::ResizePseudoConsole;
+ use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+ use windows_sys::Win32::System::Threading::GetProcessId;
+ use windows_sys::Win32::System::Threading::INFINITE;
+@@ -519,14 +518,22 @@ fn spawn_input_loop(
+                     if let Ok(guard) = hpc_handle.lock()
+                         && let Some(hpc) = guard.as_ref()
+                     {
+-                        unsafe {
+-                            let _ = ResizePseudoConsole(
+-                                *hpc,
+-                                COORD {
+-                                    X: cols as i16,
+-                                    Y: rows as i16,
+-                                },
+-                            );
++                        // ConPTY is Win10 1809+; resolve at call time so the
++                        // runner image loads on Windows 7 (resize is a no-op there).
++                        type ResizePseudoConsoleFn =
++                            unsafe extern "system" fn(HPCON, COORD) -> windows_sys::core::HRESULT;
++                        if let Some(resize) =
++                            codex_windows_sandbox::win7_proc!(b"ResizePseudoConsole" as ResizePseudoConsoleFn)
++                        {
++                            unsafe {
++                                let _ = resize(
++                                    *hpc,
++                                    COORD {
++                                        X: cols as i16,
++                                        Y: rows as i16,
++                                    },
++                                );
++                            }
+                         }
+                     }
+                 }
+diff --git a/codex-rs/windows-sandbox-rs/src/lib.rs b/codex-rs/windows-sandbox-rs/src/lib.rs
+index 7008cd1..0100844 100644
+--- a/codex-rs/windows-sandbox-rs/src/lib.rs
++++ b/codex-rs/windows-sandbox-rs/src/lib.rs
+@@ -7,6 +7,7 @@ mod ssh_config_dependencies;
+ 
+ #[doc(hidden)]
+ pub mod environment_transport;
++pub mod win7_compat;
+ #[cfg(any(windows, test))]
+ mod launch_environment;
+ 
+diff --git a/codex-rs/windows-sandbox-rs/src/package_identity.rs b/codex-rs/windows-sandbox-rs/src/package_identity.rs
+index 9ee9679..6c3d237 100644
+--- a/codex-rs/windows-sandbox-rs/src/package_identity.rs
++++ b/codex-rs/windows-sandbox-rs/src/package_identity.rs
+@@ -1,20 +1,32 @@
+ //! Queries held process package identities without trusting routing hints or environment state.
+ 
++use crate::win7_proc;
+ use anyhow::Context;
+ use anyhow::Result;
+ use anyhow::bail;
+ use std::io;
+ use windows_sys::Win32::Foundation as foundation;
+ use windows_sys::Win32::Foundation::HANDLE;
+-use windows_sys::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
++
++type GetPackageFamilyNameFn =
++    unsafe extern "system" fn(HANDLE, *mut u32, *mut u16) -> foundation::WIN32_ERROR;
++
++// Package identity APIs are Windows 8+; resolve at call time so the image
++// loads on Windows 7, where no process has a package family.
++fn get_package_family_name_fn() -> Option<GetPackageFamilyNameFn> {
++    win7_proc!(b"GetPackageFamilyName" as GetPackageFamilyNameFn)
++}
+ 
+ /// Reads a process's OS package family. Absence is not authorization.
+ ///
+ /// # Safety
+ /// The caller must keep the process handle valid throughout the query.
+ pub unsafe fn process_package_family(process: HANDLE) -> Result<Option<String>> {
++    let Some(get_package_family_name) = get_package_family_name_fn() else {
++        return Ok(None);
++    };
+     let mut length = 0;
+-    let status = unsafe { GetPackageFamilyName(process, &mut length, std::ptr::null_mut()) };
++    let status = unsafe { get_package_family_name(process, &mut length, std::ptr::null_mut()) };
+     if status == foundation::APPMODEL_ERROR_NO_PACKAGE {
+         return Ok(None);
+     }
+@@ -27,7 +39,7 @@ pub unsafe fn process_package_family(process: HANDLE) -> Result<Option<String>>
+     }
+ 
+     let mut buffer = vec![0_u16; length as usize];
+-    let status = unsafe { GetPackageFamilyName(process, &mut length, buffer.as_mut_ptr()) };
++    let status = unsafe { get_package_family_name(process, &mut length, buffer.as_mut_ptr()) };
+     if status != foundation::ERROR_SUCCESS {
+         return Err(io::Error::from_raw_os_error(status as i32))
+             .context("read the process package family");
+diff --git a/codex-rs/windows-sandbox-rs/src/unified_exec/backends/legacy.rs b/codex-rs/windows-sandbox-rs/src/unified_exec/backends/legacy.rs
+index d2bfe79..ef74034 100644
+--- a/codex-rs/windows-sandbox-rs/src/unified_exec/backends/legacy.rs
++++ b/codex-rs/windows-sandbox-rs/src/unified_exec/backends/legacy.rs
+@@ -1,3 +1,4 @@
++use crate::win7_proc;
+ use super::windows_common::finish_driver_spawn;
+ use crate::conpty::ConptyInstance;
+ use crate::conpty::spawn_conpty_process_as_user;
+@@ -45,7 +46,6 @@ use windows_sys::Win32::Foundation::HANDLE;
+ use windows_sys::Win32::Storage::FileSystem::WriteFile;
+ use windows_sys::Win32::System::Console::COORD;
+ use windows_sys::Win32::System::Console::HPCON;
+-use windows_sys::Win32::System::Console::ResizePseudoConsole;
+ use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+ use windows_sys::Win32::System::Threading::INFINITE;
+ use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
+@@ -54,6 +54,17 @@ use windows_sys::Win32::System::Threading::WaitForSingleObject;
+ 
+ const WAIT_TIMEOUT: u32 = 0x0000_0102;
+ 
++// ConPTY entry points first appeared in Windows 10 1809; resolving at call time
++// keeps the image loadable on systems that predate it.
++fn resize_pseudo_console_dyn(hpc: HPCON, size: COORD) -> windows_sys::core::HRESULT {
++    type ResizePseudoConsoleFn =
++        unsafe extern "system" fn(HPCON, COORD) -> windows_sys::core::HRESULT;
++    match win7_proc!(b"ResizePseudoConsole" as ResizePseudoConsoleFn) {
++        Some(resize) => unsafe { resize(hpc, size) },
++        None => -1,
++    }
++}
++
+ struct NonOwningProcessHandle(HANDLE);
+ 
+ // SAFETY: Process handles are opaque process-wide tokens that may be used from
+@@ -310,15 +321,13 @@ fn resize_conpty_handle(hpc: &Arc<StdMutex<Option<HPCON>>>, size: TerminalSize)
+         .as_ref()
+         .copied()
+         .ok_or_else(|| anyhow::anyhow!("process is not attached to a PTY"))?;
+-    let result = unsafe {
+-        ResizePseudoConsole(
+-            hpc,
+-            COORD {
+-                X: size.cols as i16,
+-                Y: size.rows as i16,
+-            },
+-        )
+-    };
++    let result = resize_pseudo_console_dyn(
++        hpc,
++        COORD {
++            X: size.cols as i16,
++            Y: size.rows as i16,
++        },
++    );
+     if result == 0 {
+         Ok(())
+     } else {
+diff --git a/codex-rs/windows-sandbox-rs/src/win7_compat.rs b/codex-rs/windows-sandbox-rs/src/win7_compat.rs
+new file mode 100644
+index 0000000..78776ef
+--- /dev/null
++++ b/codex-rs/windows-sandbox-rs/src/win7_compat.rs
+@@ -0,0 +1,38 @@
++//! Runtime resolution of Windows APIs that predate Windows 8/10 so the image
++//! loads on Windows 7 while callers observe graceful degradation.
++
++use std::ffi::c_void;
++
++use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
++use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
++
++/// Resolves a kernel32 entry point by name, returning `None` when the running
++/// Windows release does not export it.
++pub fn kernel32_proc(name: &[u8]) -> Option<*mut c_void> {
++    module_proc("kernel32.dll", name)
++}
++
++fn module_proc(module_name: &str, name: &[u8]) -> Option<*mut c_void> {
++    let mut module_wide: Vec<u16> = module_name.encode_utf16().collect();
++    module_wide.push(0);
++    let mut proc_name = name.to_vec();
++    proc_name.push(0);
++    unsafe {
++        let module = GetModuleHandleW(module_wide.as_ptr());
++        if module.is_null() {
++            return None;
++        }
++        let proc = GetProcAddress(module, proc_name.as_ptr())?;
++        Some(proc as *mut c_void)
++    }
++}
++
++/// Resolves a kernel32 entry point into the concrete function pointer type
++/// declared at the call site, or `None` on releases without it.
++#[macro_export]
++macro_rules! win7_proc {
++    ($name:literal as $ty:ty) => {
++        $crate::win7_compat::kernel32_proc($name)
++            .map(|proc| unsafe { std::mem::transmute::<*mut core::ffi::c_void, $ty>(proc) })
++    };
++}

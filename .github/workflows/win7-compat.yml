@@ -2,7 +2,7 @@ name: Win7 build and release
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/win7-tls-codex]
     tags: ["**"]
   workflow_dispatch:
 
@@ -11,11 +11,78 @@ permissions:
 
 concurrency:
   group: win7-compat-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
+  codex-runtime:
+    if: github.repository == 'OpenCSGs/csgclaw-win7' || github.repository == 'jialudev/csgclaw-win7'
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      RUSTC_BOOTSTRAP: "1"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache@v4
+        id: runtime-cache
+        with:
+          path: win7-codex-runtime
+          key: codex-win7-v1-${{ hashFiles('scripts/win7-codex/*') }}
+
+      - uses: actions/checkout@v4
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        with:
+          repository: openai/codex
+          ref: 2685e3a4cec1cf6ec8df5231bf2311ff7ae9551f
+          path: codex-source
+          persist-credentials: false
+
+      - name: Prepare pinned Win7 Codex sources
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          "CSGCLAW_WIN7_DELAYHOOK_OBJECT=$env:RUNNER_TEMP/codex-win7-delayhook.obj" >> $env:GITHUB_ENV
+          rustup toolchain install 1.95.0 --profile minimal --component rust-src
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/win7-codex/prepare.py apply codex-source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Push-Location codex-source/codex-rs
+          try { cargo +1.95.0 fetch --locked --target x86_64-win7-windows-msvc } finally { Pop-Location }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/win7-codex/prepare.py configure codex-source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build native Win7 Codex runtime
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: scripts\win7-codex\build.cmd
+
+      - name: Stage runtime and licenses
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          python scripts/win7-codex/stage.py codex-source win7-codex-runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify CSGClaw app-server protocol
+        shell: pwsh
+        run: |
+          python scripts/win7-codex/smoke.py win7-codex-runtime/codex.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-win7-x64-${{ github.sha }}
+          path: win7-codex-runtime/
+          if-no-files-found: error
+          retention-days: 14
+
   portable:
-    if: github.repository == 'OpenCSGs/csgclaw-win7'
+    if: github.repository == 'OpenCSGs/csgclaw-win7' || github.repository == 'jialudev/csgclaw-win7'
+    needs: [codex-runtime]
     runs-on: windows-2022
     timeout-minutes: 60
     outputs:
@@ -102,6 +169,18 @@ jobs:
           & ./desktop/out/input/windows-amd64/backend/csgclaw/bin/csgclaw-cli.exe --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: codex-win7-x64-${{ github.sha }}
+          path: win7-codex-runtime
+
+      - name: Bundle Win7 Codex runtime
+        shell: pwsh
+        run: |
+          Copy-Item win7-codex-runtime/* desktop/out/input/windows-amd64/backend/csgclaw/bin/ -Force
+          & ./desktop/out/input/windows-amd64/backend/csgclaw/bin/codex.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Package portable desktop
         shell: pwsh
         run: |
@@ -123,7 +202,7 @@ jobs:
             electron = "22.3.27"
             go_toolchain = "XTLS/go-win7 patched-1.26.7"
             updates_disabled = $true
-            codex_win7_compatibility = "Not resolved; excluded from initial page-launch acceptance"
+            codex_runtime = (Get-Content win7-codex-runtime/codex-runtime.json -Raw | ConvertFrom-Json)
           } | ConvertTo-Json | Set-Content compat-dist/build-info.json
 
       - uses: actions/upload-artifact@v4
