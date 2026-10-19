@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import urllib.request
 import zipfile
@@ -27,7 +28,7 @@ with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
         (output / name).write_bytes(zipped.read("x64/bin/" + name))
     (output / "WINPTY-LICENSE.txt").write_bytes(zipped.read("LICENSE"))
 (output / "codex-runtime.json").write_text(json.dumps({
-    "version": "0.130.0-alpha.5",
+    "version": subprocess.check_output([str(binary.resolve()), "--version"], text=True).strip().removeprefix("codex-cli "),
     "source": "https://github.com/openai/codex",
     "source_commit": BASELINE,
     "compatibility_source": "https://github.com/HaiKuoTianKong179/codex-win7-port",

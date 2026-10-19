@@ -14,7 +14,7 @@ with tempfile.TemporaryDirectory(prefix="codex-win7-smoke-") as home:
     import os
 
     process = subprocess.Popen(
-        [str(binary), "app-server", "--disable", "plugins", "--listen", "stdio://"],
+        [str(binary), "app-server", "--disable", "plugins", "--disable", "code_mode", "--disable", "code_mode_host", "--listen", "stdio://"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

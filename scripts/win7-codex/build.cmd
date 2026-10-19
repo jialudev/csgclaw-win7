@@ -4,6 +4,10 @@ for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio
 if not defined VS_PATH exit /b 1
 call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
 if errorlevel 1 exit /b 1
+cl /nologo /O2 /MT "%GITHUB_WORKSPACE%\scripts\win7-codex\delayhook-test.c" /Fe"%RUNNER_TEMP%\codex-delayhook-test.exe" /Fo"%RUNNER_TEMP%\codex-delayhook-test.obj"
+if errorlevel 1 exit /b 1
+"%RUNNER_TEMP%\codex-delayhook-test.exe"
+if errorlevel 1 exit /b 1
 cl /nologo /c /O2 /MT "%GITHUB_WORKSPACE%\scripts\win7-codex\delayhook.c" /Fo"%CSGCLAW_WIN7_DELAYHOOK_OBJECT%"
 if errorlevel 1 exit /b 1
 cd /d "%GITHUB_WORKSPACE%\codex-source\codex-rs"

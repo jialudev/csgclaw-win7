@@ -18,6 +18,16 @@ FARPROC WINAPI delayFailureHook(unsigned dliNotify, PDelayLoadInfo pdli)
         // combase.dll is Win8+; ole32 provides CoTaskMemFree on Windows 7.
         if (_stricmp(pdli->szDll, "combase.dll") == 0)
             return (FARPROC)LoadLibraryA("ole32.dll");
+
+        // On Win7 these API-set DLLs are absent, so delayimp never reaches
+        // dliFailGetProc unless we first provide a real module handle. Resolve
+        // through kernel32, then let the exact-procedure fallbacks below
+        // report unsupported operations. Returning NULL here instead raises
+        // the fatal delay-load exception 0xC06D007E during turn/start.
+        if (_stricmp(pdli->szDll, "api-ms-win-core-apiquery-l2-1-0.dll") == 0
+            || _stricmp(pdli->szDll, "api-ms-win-security-base-l1-2-2.dll") == 0
+            || _stricmp(pdli->szDll, "api-ms-win-core-winrt-l1-1-0.dll") == 0)
+            return (FARPROC)LoadLibraryA("kernel32.dll");
     }
 
     if (dliNotify == dliFailGetProc && pdli->szDll != NULL && pdli->dlp.fImportByName)
