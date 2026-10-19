@@ -11,6 +11,7 @@ import (
 	"csgclaw/internal/config"
 	"csgclaw/internal/modelcap"
 	"csgclaw/internal/modelprovider"
+	"csgclaw/internal/netcompat"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,7 +67,8 @@ var responsesWebsocketUpgrader = websocket.Upgrader{
 }
 
 var responsesWebsocketDialer = websocket.Dialer{
-	Proxy: http.ProxyFromEnvironment,
+	Proxy:           http.ProxyFromEnvironment,
+	TLSClientConfig: netcompat.TLSConfig(),
 }
 
 func (e *HTTPError) Error() string {

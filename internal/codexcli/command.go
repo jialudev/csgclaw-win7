@@ -11,8 +11,5 @@ func AppServerCommandContext(ctx context.Context, binaryPath string) (*exec.Cmd,
 }
 
 func AppServerCommandContextWithOverrides(ctx context.Context, binaryPath string, overrides []string) (*exec.Cmd, error) {
-	args := []string{"app-server", "--disable", "plugins"}
-	args = append(args, overrides...)
-	args = append(args, "--listen", "stdio://")
-	return exec.CommandContext(ctx, binaryPath, args...), nil
+	return exec.CommandContext(ctx, binaryPath, appServerArgs(overrides, legacyWindows())...), nil
 }

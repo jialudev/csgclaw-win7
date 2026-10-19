@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"csgclaw/cli/csgclawcli"
+	"csgclaw/internal/netcompat"
 )
 
 func main() {
@@ -23,6 +24,7 @@ func main() {
 }
 
 func run(args []string) error {
+	netcompat.ConfigureDefaultHTTP()
 	app := csgclawcli.New()
 	return executeWithSignalContext(args, app.Execute)
 }

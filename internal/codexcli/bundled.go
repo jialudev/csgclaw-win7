@@ -113,5 +113,16 @@ func (l BundleLocator) stat(path string) (os.FileInfo, error) {
 }
 
 func AppServerArgs() []string {
-	return []string{"app-server", "--disable", "plugins", "--listen", "stdio://"}
+	return appServerArgs(nil, legacyWindows())
+}
+
+func appServerArgs(overrides []string, legacy bool) []string {
+	args := []string{"app-server", "--disable", "plugins"}
+	if legacy {
+		// The embedded JS hosts require a modern Node/V8 runtime. Win7 must
+		// use Codex's direct tools; this does not alter sandbox permissions.
+		args = append(args, "--disable", "code_mode", "--disable", "code_mode_host")
+	}
+	args = append(args, overrides...)
+	return append(args, "--listen", "stdio://")
 }
