@@ -8,6 +8,18 @@
 static HRESULT WINAPI Stub_EFail(void) { return (HRESULT)0x80004005; }
 static HRESULT WINAPI Stub_NoPackage(void) { return (HRESULT)0x80073D54; } // APPMODEL_ERROR_NO_PACKAGE
 static int WINAPI Stub_False(void) { return 0; }
+static BOOL WINAPI Stub_DeriveCapabilitySidsFromName(
+    LPCWSTR name, PSID** group_sids, DWORD* group_count,
+    PSID** capability_sids, DWORD* capability_count)
+{
+    (void)name;
+    if (group_sids) *group_sids = NULL;
+    if (group_count) *group_count = 0;
+    if (capability_sids) *capability_sids = NULL;
+    if (capability_count) *capability_count = 0;
+    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+    return FALSE;
+}
 
 FARPROC WINAPI delayFailureHook(unsigned dliNotify, PDelayLoadInfo pdli)
 {
@@ -44,7 +56,7 @@ FARPROC WINAPI delayFailureHook(unsigned dliNotify, PDelayLoadInfo pdli)
             return (FARPROC)Stub_False;
         if (strstr(pdli->szDll, "api-ms-win-security-base") != NULL
             && strcmp(proc, "DeriveCapabilitySidsFromName") == 0)
-            return (FARPROC)Stub_EFail;
+            return (FARPROC)Stub_DeriveCapabilitySidsFromName;
         if (strstr(pdli->szDll, "api-ms-win-core-winrt") != NULL
             && strcmp(proc, "RoGetActivationFactory") == 0)
             return (FARPROC)Stub_EFail;

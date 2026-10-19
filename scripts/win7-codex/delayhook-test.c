@@ -12,7 +12,20 @@ static void check_missing_api_set(const char *dll, const char *proc, int returns
     assert(module != NULL);
     FARPROC fallback = delayFailureHook(dliFailGetProc, &info);
     assert(fallback != NULL);
-    if (returns_false)
+    if (returns_false == 2)
+    {
+        PSID* groups = (PSID*)1;
+        PSID* capabilities = (PSID*)1;
+        DWORD group_count = 1, capability_count = 1;
+        typedef BOOL (WINAPI *DeriveCapabilities)(LPCWSTR, PSID**, DWORD*, PSID**, DWORD*);
+        SetLastError(ERROR_SUCCESS);
+        BOOL result = ((DeriveCapabilities)fallback)(L"fixture", &groups, &group_count, &capabilities, &capability_count);
+        assert(result == FALSE);
+        assert(GetLastError() == ERROR_CALL_NOT_IMPLEMENTED);
+        assert(groups == NULL && capabilities == NULL);
+        assert(group_count == 0 && capability_count == 0);
+    }
+    else if (returns_false)
         assert(((int (WINAPI *)(void))fallback)() == FALSE);
     else
         assert(FAILED(((HRESULT (WINAPI *)(void))fallback)()));
@@ -22,7 +35,7 @@ static void check_missing_api_set(const char *dll, const char *proc, int returns
 int main(void)
 {
     check_missing_api_set("api-ms-win-core-apiquery-l2-1-0.dll", "IsApiSetImplemented", 1);
-    check_missing_api_set("api-ms-win-security-base-l1-2-2.dll", "DeriveCapabilitySidsFromName", 0);
+    check_missing_api_set("api-ms-win-security-base-l1-2-2.dll", "DeriveCapabilitySidsFromName", 2);
     check_missing_api_set("api-ms-win-core-winrt-l1-1-0.dll", "RoGetActivationFactory", 0);
     DelayLoadInfo unknown = {0};
     unknown.szDll = "unknown-library.dll";
