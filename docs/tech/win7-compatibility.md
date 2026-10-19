@@ -57,5 +57,24 @@ static imports, and checks CSGClaw's stdio app-server `initialize` request. The
 portable job bundles Codex, winpty, their licenses, the actual Web UI and the
 backend. Windows Server CI does not replace a real Win7 test.
 
-The Win7 VM retains its existing model/login configuration under `%USERPROFILE%\.csgclaw`. Updating the application files does not require copying credentials
-into the release ZIP. Keep the previous application folder as a rollback copy.
+The Win7 VM retains its existing model/login configuration under
+`%USERPROFILE%\.csgclaw`. Updating application files does not require copying
+credentials into the release ZIP. Keep the previous application folder as a rollback copy.
+
+## VM regression procedure
+
+Build the existing Go integration test with the pinned Win7 Go toolchain:
+
+```bash
+GOWORK=off GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+  go test -c -o win7-codex-e2e.exe ./internal/runtime/codex
+```
+
+In the Win7 guest, point `CSGCLAW_TEST_CODEX_BINARY` to the bundled executable
+and run `win7-codex-e2e.exe -test.run=^TestAgentMCPBundledCodexE2E/full_tools$ -test.v`.
+This exercises real Codex turns, local Responses/MCP fixtures, tool-catalog
+refresh and cold session recovery. It uses no external credentials or models.
+The initial community runtime passed `initialize` but reproduced `0xC06D007E`
+at `turn/start` in this test. The revised delay-load hook returns a real module
+handle for the three missing API-set DLLs so exact procedure fallbacks can run;
+unknown libraries and procedures still fail normally.

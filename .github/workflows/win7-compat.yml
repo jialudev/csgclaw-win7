@@ -82,12 +82,17 @@ jobs:
       - name: Record actual Codex version
         shell: pwsh
         run: |
+          Copy-Item docs/licenses/codex-NOTICE.txt win7-codex-runtime/CODEX-NOTICE.txt -Force
           # The pinned upstream development commit reports 0.0.0, rather than
           # the nearby release tag. The exact source commit identifies it.
           $reported = & ./win7-codex-runtime/codex.exe --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $metadata = Get-Content win7-codex-runtime/codex-runtime.json -Raw | ConvertFrom-Json
           $metadata.version = ($reported -replace '^codex-cli\s+', '').Trim()
+          $patchHash = (Get-FileHash scripts/win7-codex/compat.patch -Algorithm SHA256).Hash.ToLowerInvariant()
+          $hookHash = (Get-FileHash scripts/win7-codex/delayhook.c -Algorithm SHA256).Hash.ToLowerInvariant()
+          $metadata | Add-Member -NotePropertyName compatibility_patch_sha256 -NotePropertyValue $patchHash -Force
+          $metadata | Add-Member -NotePropertyName delayhook_sha256 -NotePropertyValue $hookHash -Force
           $metadata | ConvertTo-Json -Depth 8 | Set-Content win7-codex-runtime/codex-runtime.json -Encoding utf8
 
       - uses: actions/upload-artifact@v4
@@ -195,6 +200,8 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item win7-codex-runtime/* desktop/out/input/windows-amd64/backend/csgclaw/bin/ -Force
+          Copy-Item internal/netcompat/LICENSE-MPL-2.0.txt desktop/out/input/windows-amd64/backend/csgclaw/bin/MOZILLA-ROOTS-LICENSE.txt
+          Copy-Item internal/netcompat/README.md desktop/out/input/windows-amd64/backend/csgclaw/bin/HTTPS-TRUST.txt
           & ./desktop/out/input/windows-amd64/backend/csgclaw/bin/codex.exe --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -286,7 +293,10 @@ jobs:
             - Download the portable ZIP, extract it completely, and run CSGClaw.exe.
             - SHA256SUMS.txt contains the package checksum; build-info.json records the source commit and toolchain.
             - Electron 22.3.27, Chromium 108 Web UI target, and XTLS/go-win7 patched-1.26.7. Desktop automatic updates are disabled.
-            - Known Win7 issues: model HTTPS requests can time out during TLS negotiation; the bundled Codex runtime exits with 0xC0000139. Agent question answering has not passed validation.
+            - Win7 HTTPS uses a verified Mozilla/local ROOT trust pool to avoid native certificate-chain timeouts.
+            - Includes a pinned Win7 Codex source build, winpty, licenses and runtime metadata; fixes unavailable static APIs and delayed API-set DLLs.
+            - Modern Node/V8 code-mode hosts are disabled on Win7. Existing sandbox and approval settings remain in place; native shell and browser automation require separate validation.
+            - See [Win7 compatibility](${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}/docs/tech/win7-compatibility.md) for source provenance, VM validation and limitations.
 
             Built by [GitHub Actions](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
           files: |

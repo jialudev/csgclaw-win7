@@ -16,28 +16,30 @@
 用于 Windows 7 SP1 x64 兼容实验。桌面使用 Electron 22.3.27 和固定版本的
 Win7 Go 工具链，Web UI 以 Chromium 108 为目标构建，桌面自动更新已禁用。
 
-[Win7 构建和发布工作流](.github/workflows/win7-compat.yml) 在 `main` 分支构建便携 ZIP。
+[Win7 构建和发布工作流](.github/workflows/win7-compat.yml) 在 `main` 和
+`fix/win7-tls-codex` 分支构建便携 ZIP。开发与虚拟机调试使用
+[jialudev/csgclaw-win7 fork](https://github.com/jialudev/csgclaw-win7)。
 每次推送版本 tag 后，CI 自动构建并将 ZIP、`SHA256SUMS.txt` 和 `build-info.json` 发布到
-[本项目 Releases](https://github.com/OpenCSGs/csgclaw-win7/releases)。
+[该 fork 的 Releases](https://github.com/jialudev/csgclaw-win7/releases)。
 tag 使用语义化版本号，可带 `v` 前缀；含预发布标识的版本会标为 GitHub 预发布版。
-例如，在更新到最新 `main` 后执行：
+例如，在核对修复分支的提交后执行：
 
 ```bash
-git tag v0.8.0-alpha.win7.3
-git push origin v0.8.0-alpha.win7.3
+git tag v0.8.0-alpha.win7.4
+git push origin v0.8.0-alpha.win7.4
 ```
 
 分支提交和手动构建的产物仍保留在 Actions Artifacts 中，保留 14 天。
 下文的上游安装命令安装常规发行版，不用于安装 Win7 实验版本。
 
-当前在 UTM Windows 7 SP1 x64 虚拟机中的验证结果：
+Win7 修复与验证：
 
-- 桌面应用和 Web UI 可以启动。
-- 可以导入 STG 登录态和模型配置。
-- HTTPS 模型请求仍出现 TLS 握手超时。
-- 内置 Codex runtime 在初始化时以 `0xC0000139` 退出。
+- HTTPS 超时来自 Win7 系统证书链验证。现在使用 Mozilla 根证书与本机 ROOT 证书构建独立信任池，保留证书和域名验证；UTM 中的真实模型请求已返回 HTTP 200。
+- 旧 Codex 调用了 Win7 缺少的系统接口，以 `0xC0000139` 退出。现在从固定源码编译兼容 runtime，附带 winpty；UTM 中程序启动和 app-server 初始化已通过。
+- 兼容补丁还修复了首次处理消息时缺少延迟加载 DLL 导致的 `0xC06D007E`，真实 Win7 验证需要覆盖完整问答，初始化成功不能替代消息处理测试。
+- Win7 禁用依赖现代 Node/V8 的 Codex `code_mode` 和 `code_mode_host`，保留原有 sandbox 与审批设置。原生 shell、浏览器自动化等能力需要另行验证。
 
-Windows 7 上的 Agent 问答尚未通过验证，runtime 和 HTTPS 问题仍待解决。
+详细原因、源码与许可证、构建和验证边界见 [Win7 兼容说明](docs/tech/win7-compatibility.md)。
 
 ## 上游项目
 

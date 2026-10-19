@@ -18,30 +18,39 @@ It uses Electron 22.3.27, a pinned Win7 Go toolchain, and a Web UI targeting
 Chromium 108. Desktop updates are disabled for this build.
 
 The [Win7 build and release workflow](.github/workflows/win7-compat.yml) builds a
-portable ZIP on `main`. Pushing a version tag automatically builds and publishes
-the ZIP, `SHA256SUMS.txt`, and `build-info.json`
-to [this repository's Releases](https://github.com/OpenCSGs/csgclaw-win7/releases).
+portable ZIP on `main` and `fix/win7-tls-codex`. Development and VM testing use the
+[jialudev/csgclaw-win7 fork](https://github.com/jialudev/csgclaw-win7).
+Pushing a version tag publishes the ZIP, `SHA256SUMS.txt`, and `build-info.json`
+to [the fork's Releases](https://github.com/jialudev/csgclaw-win7/releases).
 Tags use semantic versions with an optional `v` prefix; prerelease versions are
-marked as GitHub prereleases. For example, after updating `main`:
+marked as GitHub prereleases. After checking the fix branch commit:
 
 ```bash
-git tag v0.8.0-alpha.win7.3
-git push origin v0.8.0-alpha.win7.3
+git tag v0.8.0-alpha.win7.4
+git push origin v0.8.0-alpha.win7.4
 ```
 
 Branch and manual builds remain available as workflow artifacts for 14 days.
 The upstream installation commands below install the regular release and are
 not the Win7 installation path.
 
-Current validation in a UTM Windows 7 SP1 x64 VM:
+Win7 fixes and validation:
 
-- The desktop application and Web UI launch.
-- STG login state and model configuration can be imported.
-- HTTPS model requests still fail with a TLS handshake timeout.
-- The bundled Codex runtime exits during initialization with `0xC0000139`.
+- HTTPS timeouts came from native Win7 certificate-chain verification. A fresh
+  Mozilla plus local ROOT trust pool retains certificate and hostname checks;
+  real model requests returned HTTP 200 in UTM.
+- The old Codex imported unavailable Win7 APIs and exited with `0xC0000139`.
+  A pinned compatible source build with winpty now passes executable startup
+  and app-server initialization in UTM.
+- The compatibility hook also handles missing delayed DLLs that caused
+  `0xC06D007E` on the first turn. Full-turn VM regression is required in addition
+  to initialization checks.
+- Win7 disables Codex `code_mode` and `code_mode_host`, which need modern
+  Node/V8. Existing sandbox and approval settings remain in place. Native shell,
+  browser automation and other capabilities require separate validation.
 
-Agent question answering has not passed on Windows 7. The runtime and HTTPS
-issues remain unresolved.
+See [Win7 compatibility](docs/tech/win7-compatibility.md) for root causes, pinned
+sources, licenses and verification limits.
 
 ## Upstream project
 
