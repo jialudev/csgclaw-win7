@@ -67,11 +67,28 @@ jobs:
           python scripts/win7-codex/stage.py codex-source win7-codex-runtime
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Check known Win7 loader incompatibilities
+        shell: pwsh
+        run: |
+          python scripts/check-win7-pe.py win7-codex-runtime/codex.exe win7-codex-runtime/winpty.dll win7-codex-runtime/winpty-agent.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Verify CSGClaw app-server protocol
         shell: pwsh
         run: |
           python scripts/win7-codex/smoke.py win7-codex-runtime/codex.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Record actual Codex version
+        shell: pwsh
+        run: |
+          # The pinned upstream development commit reports 0.0.0, rather than
+          # the nearby release tag. The exact source commit identifies it.
+          $reported = & ./win7-codex-runtime/codex.exe --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $metadata = Get-Content win7-codex-runtime/codex-runtime.json -Raw | ConvertFrom-Json
+          $metadata.version = ($reported -replace '^codex-cli\s+', '').Trim()
+          $metadata | ConvertTo-Json -Depth 8 | Set-Content win7-codex-runtime/codex-runtime.json -Encoding utf8
 
       - uses: actions/upload-artifact@v4
         with:
