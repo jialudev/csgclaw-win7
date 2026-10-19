@@ -8,8 +8,9 @@ start on Windows 7. Build the private runtime from these fixed sources:
 - Compatibility patch and delay-load hook from
   [codex-win7-port](https://github.com/HaiKuoTianKong179/codex-win7-port/tree/31899c3041c5934c027da052d41797dac76d7eaf),
   commit `31899c3041c5934c027da052d41797dac76d7eaf`, Apache-2.0 as
-  stated in that project's README. The vendored patch is unchanged;
-  `prepare.py` replaces its developer-specific paths during the build.
+  stated in that project's README. The patch is rebased onto the documented
+  baseline, including its windows-sys 0.52 integer handle types;
+  `prepare.py` replaces the original developer-specific paths during the build.
 - Rust `1.95.0`, `x86_64-win7-windows-msvc`, static CRT and rebuilt std.
 - [winpty 0.4.3](https://github.com/rprichard/winpty/releases/tag/0.4.3), MIT;
   official `winpty-0.4.3-msvc2015.zip` SHA-256
