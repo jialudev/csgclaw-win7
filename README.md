@@ -26,8 +26,8 @@ Tags use semantic versions with an optional `v` prefix; prerelease versions are
 marked as GitHub prereleases. After checking the fix branch commit:
 
 ```bash
-git tag v0.8.0-alpha.win7.4
-git push origin v0.8.0-alpha.win7.4
+git tag v0.8.0-alpha.win7.5
+git push origin v0.8.0-alpha.win7.5
 ```
 
 Branch and manual builds remain available as workflow artifacts for 14 days.

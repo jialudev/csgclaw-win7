@@ -52,7 +52,11 @@ any semantic-version tag builds a portable ZIP and publishes it, its checksum,
 and build metadata to that repository's Releases. Tags with prerelease versions
 create GitHub prereleases. Feature branch tags need not be merged into `main`.
 
-CI builds and caches the pinned Codex runtime, rejects the known incompatible
+CI builds and caches the pinned Codex runtime. Tag builds may reuse a successful
+runtime artifact from this repository only when its complete `scripts/win7-codex`
+Git tree matches. The artifact must pass checksum, source/toolchain, patch-hash,
+import and protocol checks again; expired artifacts or changed inputs trigger a
+fresh source build. CI rejects the known incompatible
 static imports, and checks CSGClaw's stdio app-server `initialize` request. The
 portable job bundles Codex, winpty, their licenses, the actual Web UI and the
 backend. Windows Server CI does not replace a real Win7 test.
@@ -72,9 +76,40 @@ GOWORK=off GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
 
 In the Win7 guest, point `CSGCLAW_TEST_CODEX_BINARY` to the bundled executable
 and run `win7-codex-e2e.exe -test.run=^TestAgentMCPBundledCodexE2E/full_tools$ -test.v`.
+On slow emulation, set `CSGCLAW_TEST_CODEX_TIMEOUT=3m` and pass
+`-test.timeout=4m`. The isolated fixtures disable system-proxy discovery for their
+local-only traffic; production Agent proxy settings remain unchanged.
+
 This exercises real Codex turns, local Responses/MCP fixtures, tool-catalog
 refresh and cold session recovery. It uses no external credentials or models.
 The initial community runtime passed `initialize` but reproduced `0xC06D007E`
 at `turn/start` in this test. The revised delay-load hook returns a real module
 handle for the three missing API-set DLLs so exact procedure fallbacks can run;
 unknown libraries and procedures still fail normally.
+
+The hook also corrects `DeriveCapabilitySidsFromName`: its return type is
+[`BOOL`](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-derivecapabilitysidsfromname),
+so an `HRESULT` failure value is nonzero and incorrectly signals success.
+The typed fallback now returns `FALSE`, clears the output pointers/counts and
+sets `ERROR_CALL_NOT_IMPLEMENTED`. Its regression test checks that contract.
+
+## Observed VM results (2026-10-19)
+
+The original installed application was `0.8.0-alpha.win7.2`. With the patched
+backend and DLL-compatible runtime in that same UTM Win7 SP1 x64 guest:
+
+- Chat Completions returned HTTP 200 and `WIN7_TLS_OK`.
+- Streaming Responses returned HTTP 200, completed normally and emitted
+  `WIN7_RESPONSES_OK`.
+- The actual Manager conversation displayed `WIN7_AGENT_FIXED_OK` with
+  `succeeded` status. This verifies the full UI/backend/Codex/model reply path.
+- Native command-argument tests passed on Win7.
+- The isolated full MCP regression passed in 63 seconds: three tool calls,
+  live catalog refresh, same-thread continuity and cold recovery succeeded.
+
+The 40-second local MCP fixture initially exceeded its timeout while native
+HTTP clients reported proxy-route timeouts. WinHTTP inspection confirmed
+automatic proxy detection was enabled, with no explicit proxy or PAC URL.
+Fixture isolation and a configurable regression timeout keep this environment
+behavior separate from protocol failures. Native shell/browser capabilities
+have not been certified by these question-answering checks.

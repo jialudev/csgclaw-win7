@@ -15,7 +15,11 @@ func TestAppServerCommandContextUsesBundledNativeBinary(t *testing.T) {
 	if got, want := cmd.Path, binaryPath; got != want {
 		t.Fatalf("command path = %q, want %q", got, want)
 	}
-	if got, want := cmd.Args, []string{binaryPath, "app-server", "--disable", "plugins", "--listen", "stdio://"}; !reflect.DeepEqual(got, want) {
+	want := []string{binaryPath, "app-server", "--disable", "plugins", "--listen", "stdio://"}
+	if legacyWindows() {
+		want = []string{binaryPath, "app-server", "--disable", "plugins", "--disable", "code_mode", "--disable", "code_mode_host", "--listen", "stdio://"}
+	}
+	if got := cmd.Args; !reflect.DeepEqual(got, want) {
 		t.Fatalf("command args = %q, want %q", got, want)
 	}
 }
@@ -27,6 +31,9 @@ func TestAppServerCommandContextWithOverrides(t *testing.T) {
 		t.Fatalf("AppServerCommandContextWithOverrides() error = %v", err)
 	}
 	want := []string{binaryPath, "app-server", "--disable", "plugins", "--disable", "shell_tool", "--listen", "stdio://"}
+	if legacyWindows() {
+		want = []string{binaryPath, "app-server", "--disable", "plugins", "--disable", "code_mode", "--disable", "code_mode_host", "--disable", "shell_tool", "--listen", "stdio://"}
+	}
 	if !reflect.DeepEqual(cmd.Args, want) {
 		t.Fatalf("command args = %q, want %q", cmd.Args, want)
 	}

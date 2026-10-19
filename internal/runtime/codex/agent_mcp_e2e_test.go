@@ -43,8 +43,28 @@ func testAgentMCPBundledCodex(t *testing.T, model string, refreshDiscoveryDelay 
 		t.Fatal(err)
 	}
 	home := t.TempDir()
+	t.Cleanup(func() {
+		if t.Failed() {
+			path := filepath.Join(home, "agent-alice", hostStateDirName, homeDirName, stderrLogFileName)
+			if data, err := os.ReadFile(path); err == nil {
+				if len(data) > 16*1024 {
+					data = data[len(data)-16*1024:]
+				}
+				t.Logf("Codex stderr tail:\n%s", data)
+			}
+		}
+	})
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", filepath.Join(home, "host-codex"))
+	// The fixtures only use loopback HTTP. Workstation PAC/WPAD discovery must
+	// not determine whether a local protocol regression test times out.
+	fixtureCodexHome := filepath.Join(home, "agent-alice", hostStateDirName, homeDirName)
+	if err := os.MkdirAll(fixtureCodexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixtureCodexHome, configFileName), []byte("[features]\nrespect_system_proxy = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var revision atomic.Uint64
 	var calls atomic.Uint64
 	var sawSearch, sawSearchOutput atomic.Bool
@@ -147,6 +167,7 @@ func testAgentMCPBundledCodex(t *testing.T, model string, refreshDiscoveryDelay 
 	}
 	profile.BaseURL = server.URL + "/v1"
 	profile.Env["CSGCLAW_BASE_URL"] = server.URL
+	profile.Env["NO_PROXY"] = "127.0.0.1,localhost,::1"
 	newRuntime := func() *Runtime {
 		return New(Dependencies{BinaryProvider: fakeBinaryProvider{path: binary}, AgentHome: func(string) (string, error) { return filepath.Join(home, "agent-alice"), nil }, ResolveAgent: func(agentruntime.Handle) (AgentRef, error) {
 			return AgentRef{ID: "agent-alice", Name: "alice", Profile: profile, MCPServers: map[string]any{}, RuntimeOptions: map[string]any{"memory_mode": "disabled"}}, nil
@@ -155,16 +176,25 @@ func testAgentMCPBundledCodex(t *testing.T, model string, refreshDiscoveryDelay 
 	rt = newRuntime()
 	rt.SetAgentMCPRevisionSource(func(string) uint64 { return revision.Load() })
 	defer func() { _ = rt.Close() }()
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	timeout := 40 * time.Second
+	if raw := os.Getenv("CSGCLAW_TEST_CODEX_TIMEOUT"); raw != "" {
+		timeout, err = time.ParseDuration(raw)
+		if err != nil || timeout <= 0 {
+			t.Fatalf("invalid CSGCLAW_TEST_CODEX_TIMEOUT: %q", raw)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	handle, err := rt.New(ctx, agentruntime.Spec{RuntimeID: "rt-agent-alice", AgentID: "agent-alice", AgentName: "alice", Profile: profile})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("native runtime created; regression timeout=%s", timeout)
 	thread, err := rt.EnsureEngineSession(ctx, handle.RuntimeID, "room:test:participant:alice")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Log("conversation thread ready")
 	if err = rt.Prompt(ctx, handle.RuntimeID, thread, "Call the revision tool."); err != nil {
 		t.Fatal(err)
 	}

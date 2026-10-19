@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: win7-compat-${{ github.ref }}
@@ -32,8 +33,24 @@ jobs:
           path: win7-codex-runtime
           key: codex-win7-v1-${{ hashFiles('scripts/win7-codex/*') }}
 
+      - name: Find a verified runtime with identical build inputs
+        id: reused-runtime
+        if: steps.runtime-cache.outputs.cache-hit != 'true' && github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/reuse-win7-codex.py
+
+      - uses: actions/download-artifact@v4
+        if: steps.reused-runtime.outputs.found == 'true'
+        with:
+          name: codex-win7-x64-${{ steps.reused-runtime.outputs.head_sha }}
+          run-id: ${{ steps.reused-runtime.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: win7-codex-runtime
+
       - uses: actions/checkout@v4
-        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        if: steps.runtime-cache.outputs.cache-hit != 'true' && steps.reused-runtime.outputs.found != 'true'
         with:
           repository: openai/codex
           ref: 2685e3a4cec1cf6ec8df5231bf2311ff7ae9551f
@@ -41,7 +58,7 @@ jobs:
           persist-credentials: false
 
       - name: Prepare pinned Win7 Codex sources
-        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        if: steps.runtime-cache.outputs.cache-hit != 'true' && steps.reused-runtime.outputs.found != 'true'
         shell: pwsh
         run: |
           "CSGCLAW_WIN7_DELAYHOOK_OBJECT=$env:RUNNER_TEMP/codex-win7-delayhook.obj" >> $env:GITHUB_ENV
@@ -56,16 +73,32 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build native Win7 Codex runtime
-        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        if: steps.runtime-cache.outputs.cache-hit != 'true' && steps.reused-runtime.outputs.found != 'true'
         shell: cmd
         run: scripts\win7-codex\build.cmd
 
       - name: Stage runtime and licenses
-        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        if: steps.runtime-cache.outputs.cache-hit != 'true' && steps.reused-runtime.outputs.found != 'true'
         shell: pwsh
         run: |
           python scripts/win7-codex/stage.py codex-source win7-codex-runtime
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Validate runtime provenance and checksum
+        shell: pwsh
+        run: |
+          $metadata = Get-Content win7-codex-runtime/codex-runtime.json -Raw | ConvertFrom-Json
+          if ((Get-FileHash win7-codex-runtime/codex.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $metadata.sha256) {
+            throw "Codex runtime SHA-256 mismatch"
+          }
+          if ($metadata.source_commit -ne '2685e3a4cec1cf6ec8df5231bf2311ff7ae9551f' -or $metadata.target -ne 'x86_64-win7-windows-msvc' -or $metadata.rust -ne '1.95.0' -or $metadata.winpty -ne '0.4.3') {
+            throw "Unexpected Codex runtime source or toolchain"
+          }
+          $patchHash = (Get-FileHash scripts/win7-codex/compat.patch -Algorithm SHA256).Hash.ToLowerInvariant()
+          $hookHash = (Get-FileHash scripts/win7-codex/delayhook.c -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ('${{ steps.reused-runtime.outputs.found }}' -eq 'true' -and ($metadata.compatibility_patch_sha256 -ne $patchHash -or $metadata.delayhook_sha256 -ne $hookHash)) {
+            throw "Reused runtime compatibility inputs do not match this tag"
+          }
 
       - name: Check known Win7 loader incompatibilities
         shell: pwsh

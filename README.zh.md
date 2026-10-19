@@ -25,8 +25,8 @@ tag 使用语义化版本号，可带 `v` 前缀；含预发布标识的版本�
 例如，在核对修复分支的提交后执行：
 
 ```bash
-git tag v0.8.0-alpha.win7.4
-git push origin v0.8.0-alpha.win7.4
+git tag v0.8.0-alpha.win7.5
+git push origin v0.8.0-alpha.win7.5
 ```
 
 分支提交和手动构建的产物仍保留在 Actions Artifacts 中，保留 14 天。
